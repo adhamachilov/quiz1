@@ -1,5 +1,5 @@
 [build]
-  command = "npm run build"
+  command = "npm run build && rm -rf netlify/functions/dist && cp -R dist netlify/functions/dist"
   publish = "public"
   functions = "netlify/functions"
 

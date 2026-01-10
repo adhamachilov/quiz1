@@ -4,7 +4,7 @@ const getBot = () => {
   if (cachedBot) return cachedBot;
   // Lazy require so we can surface errors in function logs
   // and avoid crashing the module at import time.
-  const mod = require('../../dist/bot.js');
+  const mod = require('./dist/bot.js');
   cachedBot = mod.bot;
   return cachedBot;
 };
