@@ -1,0 +1,11 @@
+[build]
+  command = "npm run build"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+
+[[redirects]]
+  from = "/telegram-webhook"
+  to = "/.netlify/functions/telegram-webhook"
+  status = 200

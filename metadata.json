@@ -1,0 +1,5 @@
+{
+  "name": "Gemini Student Quiz Bot",
+  "description": "A Telegram bot that generates quizzes from uploaded student lesson files (PDF, DOCX, PPTX) using Google Gemini API.",
+  "requestFramePermissions": []
+}
