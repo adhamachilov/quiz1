@@ -22,6 +22,13 @@ export interface UserSession {
 
   language?: Language;
 
+  onboardingAsked?: boolean;
+  contactShared?: boolean;
+  phoneNumber?: string;
+  lastContactPromptAt?: number;
+
+  askedQuestionTexts?: string[];
+
   adminAwaitingBroadcast?: boolean;
 
   quizQuestions?: QuizQuestion[];

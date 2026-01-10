@@ -21,6 +21,10 @@ const messages: Record<Language, Record<string, string>> = {
   en: {
     chooseLanguage: '🌐 Choose language:',
     uploadPrompt: '📤 Please upload your file now.',
+    shareContactPrompt: '📞 Please share your contact number:',
+    shareContactBtn: '📞 Share contact',
+    changeLanguageBtn: '🌐 Change language',
+    contactThanks: '✅ Thanks! Your contact was saved.',
     welcome:
       "👋 Welcome to the AI Quiz Bot!\n\n" +
       "1️⃣ Upload a lesson file (PDF, DOCX, PPTX).\n" +
@@ -70,6 +74,10 @@ const messages: Record<Language, Record<string, string>> = {
   uz: {
     chooseLanguage: '🌐 Tilni tanlang:',
     uploadPrompt: '📤 Iltimos, faylni yuboring.',
+    shareContactPrompt: '📞 Iltimos, telefon raqamingizni ulashing:',
+    shareContactBtn: '📞 Kontaktni ulashish',
+    changeLanguageBtn: '🌐 Tilni o‘zgartirish',
+    contactThanks: '✅ Rahmat! Kontaktingiz saqlandi.',
     welcome:
       "👋 AI Quiz Bot-ga xush kelibsiz!\n\n" +
       "1️⃣ Dars faylini yuboring (PDF, DOCX, PPTX).\n" +
@@ -119,6 +127,10 @@ const messages: Record<Language, Record<string, string>> = {
   ru: {
     chooseLanguage: '🌐 Выберите язык:',
     uploadPrompt: '📤 Пожалуйста, отправьте файл.',
+    shareContactPrompt: '📞 Пожалуйста, поделитесь номером телефона:',
+    shareContactBtn: '📞 Поделиться контактом',
+    changeLanguageBtn: '🌐 Изменить язык',
+    contactThanks: '✅ Спасибо! Контакт сохранён.',
     welcome:
       "👋 Добро пожаловать в AI Quiz Bot!\n\n" +
       "1️⃣ Отправьте файл урока (PDF, DOCX, PPTX).\n" +
@@ -206,10 +218,70 @@ const languageKeyboard = () =>
     [Markup.button.callback('🇷🇺 Russian', 'lang_ru')],
   ]);
 
+const mainMenuKeyboard = (lang: Language, includeContact: boolean) => {
+  const rows: any[] = [];
+  if (includeContact) {
+    rows.push([Markup.button.contactRequest(t(lang, 'shareContactBtn'))]);
+    return Markup.keyboard(rows).resize();
+  }
+  rows.push([Markup.button.text(t(lang, 'changeLanguageBtn'))]);
+  return Markup.keyboard(rows).resize();
+};
+
+const maybePromptContact = async (ctx: any, lang: Language) => {
+  if (!ctx.session) return;
+  const now = Date.now();
+  const last = Number(ctx.session.lastContactPromptAt ?? 0);
+  if (now - last < 2000) return;
+  ctx.session.lastContactPromptAt = now;
+  await ctx.reply(t(lang, 'shareContactPrompt'), mainMenuKeyboard(lang, true));
+};
+
+const isChangeLanguageText = (text: string): boolean => {
+  const values = Object.values(messages) as Array<Record<string, string>>;
+  return values.some(m => m.changeLanguageBtn === text);
+};
+
+const changeLanguageTriggers: string[] = (Object.values(messages) as Array<Record<string, string>>)
+  .map(m => m.changeLanguageBtn)
+  .filter((v): v is string => typeof v === 'string' && v.length > 0);
+
 const toPollSafeText = (text: string | undefined, maxLen: number): string => {
   const value = (text ?? '').toString();
   if (value.length <= maxLen) return value;
   return value.substring(0, Math.max(0, maxLen - 1)).trimEnd();
+};
+
+const normalizeQuestionText = (text: string): string => {
+  return (text ?? '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
+const jaccardSimilarity = (a: string, b: string): number => {
+  const aTokens = new Set(normalizeQuestionText(a).split(' ').filter(Boolean));
+  const bTokens = new Set(normalizeQuestionText(b).split(' ').filter(Boolean));
+  if (aTokens.size === 0 || bTokens.size === 0) return 0;
+  let intersection = 0;
+  for (const t of aTokens) {
+    if (bTokens.has(t)) intersection++;
+  }
+  const union = aTokens.size + bTokens.size - intersection;
+  return union <= 0 ? 0 : intersection / union;
+};
+
+const isNearDuplicateQuestion = (candidate: string, existing: string[]): boolean => {
+  const candNorm = normalizeQuestionText(candidate);
+  if (!candNorm) return true;
+  for (const e of existing) {
+    const eNorm = normalizeQuestionText(e);
+    if (!eNorm) continue;
+    if (candNorm === eNorm) return true;
+    if (jaccardSimilarity(candNorm, eNorm) >= 0.82) return true;
+  }
+  return false;
 };
 
 // Simple in-memory session store (Map<UserId, UserSession>)
@@ -308,7 +380,7 @@ const sendQuestionPoll = async (
 
 // --- COMMANDS ---
 
-bot.command('start', (ctx: MyContext) => {
+bot.command('start', async (ctx: MyContext) => {
   if (!ctx.from) return;
   if (!ctx.session) {
     if (!dbEnabled) {
@@ -321,11 +393,17 @@ bot.command('start', (ctx: MyContext) => {
 
   const lang = ctx.session?.language as Language | undefined;
   if (!lang) {
-    (ctx as any).reply(t('en', 'chooseLanguage'), languageKeyboard());
+    await (ctx as any).reply(t('en', 'chooseLanguage'), languageKeyboard());
     return;
   }
 
-  (ctx as any).reply(t(lang, 'uploadPrompt'));
+  if (ctx.session && !ctx.session.contactShared) {
+    ctx.session.onboardingAsked = true;
+    await maybePromptContact(ctx as any, lang);
+    return;
+  }
+
+  await (ctx as any).reply(t(lang, 'uploadPrompt'), mainMenuKeyboard(lang, false));
 });
 
 bot.command('help', (ctx: MyContext) => {
@@ -333,7 +411,15 @@ bot.command('help', (ctx: MyContext) => {
   if (!lang) {
     return (ctx as any).reply(t('en', 'chooseLanguage'), languageKeyboard());
   }
+  if (!ctx.session?.contactShared) {
+    return maybePromptContact(ctx as any, lang);
+  }
   return (ctx as any).reply(t(lang, 'help'));
+});
+
+bot.hears(changeLanguageTriggers, async (ctx: any) => {
+  const lang: Language = (ctx.session?.language as Language) || 'en';
+  await ctx.reply(t(lang, 'chooseLanguage'), languageKeyboard());
 });
 
 const ADMIN_ID = 609527259;
@@ -488,7 +574,28 @@ bot.action(/lang_(en|uz|ru)/, async (ctx: any) => {
     ctx.session.language = lang;
   }
   await ctx.answerCbQuery();
+
+  if (ctx.session && !ctx.session.contactShared) {
+    ctx.session.onboardingAsked = true;
+    await ctx.editMessageText(t(lang, 'chooseLanguage'));
+    await maybePromptContact(ctx, lang);
+    return;
+  }
+
   await ctx.editMessageText(t(lang, 'uploadPrompt'));
+  await ctx.reply(t(lang, 'uploadPrompt'), mainMenuKeyboard(lang, !ctx.session?.contactShared));
+});
+
+bot.on(message('contact'), async (ctx: MyContext) => {
+  const lang: Language = (ctx.session?.language as Language) || 'en';
+  const contact = (ctx.message as any)?.contact;
+  if (!contact) return;
+  if (ctx.session) {
+    ctx.session.contactShared = true;
+    ctx.session.phoneNumber = contact.phone_number;
+  }
+  await ctx.reply(t(lang, 'contactThanks'));
+  await ctx.reply(t(lang, 'uploadPrompt'), mainMenuKeyboard(lang, false));
 });
 
 // --- FILE HANDLER ---
@@ -515,6 +622,11 @@ bot.on(message('document'), async (ctx: MyContext) => {
     return;
   }
 
+  if (!ctx.session?.contactShared) {
+    await maybePromptContact(ctx as any, lang);
+    return;
+  }
+
   if (!isValidFileType(mimeType)) {
     return ctx.reply(t(lang, 'invalidType'));
   }
@@ -524,7 +636,7 @@ bot.on(message('document'), async (ctx: MyContext) => {
   }
 
   try {
-    ctx.reply(t(lang, 'downloading'));
+    await ctx.reply(t(lang, 'downloading'));
     
     // Get file link
     const fileLink = await ctx.telegram.getFileLink(doc.file_id);
@@ -549,6 +661,7 @@ bot.on(message('document'), async (ctx: MyContext) => {
     if (ctx.session) {
       ctx.session.fileText = text;
       ctx.session.fileLanguage = detectFileLanguage(text);
+      ctx.session.askedQuestionTexts = [];
     }
 
     ctx.reply(t(lang, 'howMany'), Markup.inlineKeyboard([
@@ -565,6 +678,12 @@ bot.on(message('document'), async (ctx: MyContext) => {
 // --- ACTIONS (Question Count) ---
 
 bot.action(/count_(\d+)/, async (ctx: any) => {
+  if (!ctx.session?.contactShared) {
+    const fallbackLang: Language = (ctx.session?.language as Language) || 'en';
+    await ctx.answerCbQuery();
+    await ctx.reply(t(fallbackLang, 'shareContactPrompt'), mainMenuKeyboard(fallbackLang, true));
+    return;
+  }
   if (!ctx.session || !ctx.session.fileText) {
     const fallbackLang: Language = (ctx.session?.language as Language) || 'en';
     return ctx.reply(t(fallbackLang, 'sessionExpired'));
@@ -588,6 +707,12 @@ bot.action(/count_(\d+)/, async (ctx: any) => {
 // --- ACTIONS (Difficulty & Generation) ---
 
 bot.action(/diff_(.+)/, async (ctx: any) => {
+  if (!ctx.session?.contactShared) {
+    const fallbackLang: Language = (ctx.session?.language as Language) || 'en';
+    await ctx.answerCbQuery();
+    await ctx.reply(t(fallbackLang, 'shareContactPrompt'), mainMenuKeyboard(fallbackLang, true));
+    return;
+  }
   if (!ctx.session || !ctx.session.fileText || !ctx.session.questionCount) {
     const fallbackLang: Language = (ctx.session?.language as Language) || 'en';
     return ctx.reply(t(fallbackLang, 'sessionExpired'));
@@ -605,7 +730,38 @@ bot.action(/diff_(.+)/, async (ctx: any) => {
 
   try {
     const quizLang: Language = (ctx.session.fileLanguage as Language) || 'en';
-    const quiz = await generateQuiz(ctx.session.fileText, ctx.session.questionCount, difficulty, quizLang);
+    const baseAvoid = (ctx.session.askedQuestionTexts ?? []).slice();
+    const requestedCount = ctx.session.questionCount;
+    const quiz1 = await generateQuiz(ctx.session.fileText, requestedCount, difficulty, quizLang, baseAvoid);
+
+    const accepted: any[] = [];
+    const seen = new Set<string>();
+    for (const q of quiz1.questions ?? []) {
+      const qText = String(q?.question ?? '');
+      const norm = normalizeQuestionText(qText);
+      if (!norm || seen.has(norm)) continue;
+      if (isNearDuplicateQuestion(qText, baseAvoid)) continue;
+      seen.add(norm);
+      accepted.push(q);
+    }
+
+    // If the model returned repeats/paraphrases, do one extra attempt to top up.
+    if (accepted.length < requestedCount) {
+      const remaining = requestedCount - accepted.length;
+      const avoid2 = baseAvoid.concat(accepted.map(q => String(q?.question ?? '')));
+      const quiz2 = await generateQuiz(ctx.session.fileText, remaining, difficulty, quizLang, avoid2);
+      for (const q of quiz2.questions ?? []) {
+        const qText = String(q?.question ?? '');
+        const norm = normalizeQuestionText(qText);
+        if (!norm || seen.has(norm)) continue;
+        if (isNearDuplicateQuestion(qText, avoid2)) continue;
+        seen.add(norm);
+        accepted.push(q);
+        if (accepted.length >= requestedCount) break;
+      }
+    }
+
+    const quiz = { questions: accepted };
 
     // Fix: Explicitly access chat ID via cast to avoid "Property 'id' does not exist on type 'unknown'"
     const chatId = (ctx.chat as any).id;
@@ -621,6 +777,10 @@ bot.action(/diff_(.+)/, async (ctx: any) => {
     ctx.session.score = 0;
 
     await ctx.reply(t(lang, 'answerToContinue', { n: quiz.questions.length }));
+
+    ctx.session.askedQuestionTexts = (ctx.session.askedQuestionTexts ?? []).concat(
+      quiz.questions.map(q => String(q?.question ?? '')).filter(Boolean)
+    );
 
     const userId = (ctx.from as any)?.id;
     if (!userId) {
@@ -718,11 +878,14 @@ bot.on('poll_answer' as any, async (ctx: any) => {
 });
 
 bot.action('more', async (ctx: any) => {
-  const userId = (ctx.from as any)?.id;
-  if (!userId) return;
-  const session = sessions.get(userId);
+  const session = ctx.session as UserSession | undefined;
   const lang: Language = (session?.language as Language) || 'en';
-  if (!session?.fileText) {
+  if (!session || !session.contactShared) {
+    await ctx.answerCbQuery();
+    await ctx.reply(t(lang, 'shareContactPrompt'), mainMenuKeyboard(lang, true));
+    return;
+  }
+  if (!session || !session.fileText) {
     await ctx.answerCbQuery();
     await ctx.editMessageText(t(lang, 'uploadPrompt'));
     return;
@@ -748,20 +911,28 @@ bot.action('more', async (ctx: any) => {
 });
 
 bot.action('newfile', async (ctx: any) => {
-  const userId = (ctx.from as any)?.id;
-  if (!userId) return;
-  const session = sessions.get(userId);
+  const session = ctx.session as UserSession | undefined;
   const lang: Language = (session?.language as Language) || 'en';
-  if (session) {
-    session.fileText = undefined;
-    session.questionCount = undefined;
-    session.difficulty = undefined;
-    session.quizQuestions = undefined;
-    session.currentQuestionIndex = undefined;
-    session.totalQuestions = undefined;
-    session.score = undefined;
-    session.isProcessing = false;
+  if (!session || !session.contactShared) {
+    await ctx.answerCbQuery();
+    await ctx.reply(t(lang, 'shareContactPrompt'), mainMenuKeyboard(lang, true));
+    return;
   }
+  if (!session) {
+    await ctx.answerCbQuery();
+    await ctx.editMessageText(t(lang, 'uploadPrompt'));
+    return;
+  }
+
+  session.fileText = undefined;
+  session.questionCount = undefined;
+  session.difficulty = undefined;
+  session.askedQuestionTexts = undefined;
+  session.quizQuestions = undefined;
+  session.currentQuestionIndex = undefined;
+  session.totalQuestions = undefined;
+  session.score = undefined;
+  session.isProcessing = false;
   await ctx.answerCbQuery();
   await ctx.editMessageText(t(lang, 'uploadPrompt'));
 });

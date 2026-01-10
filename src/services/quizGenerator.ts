@@ -12,14 +12,15 @@ export const generateQuiz = async (
   fileText: string, 
   count: number, 
   difficulty: Difficulty,
-  language: Language
+  language: Language,
+  avoidQuestions?: string[]
 ): Promise<QuizResponse> => {
   
   // Safety: Limit text size
   const safeText = chunkText(fileText);
 
   // Construct Prompt
-  const prompt = generateQuizPrompt(safeText, count, difficulty, language);
+  const prompt = generateQuizPrompt(safeText, count, difficulty, language, avoidQuestions);
 
   let attempt = 0;
 

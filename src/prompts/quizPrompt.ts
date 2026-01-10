@@ -5,7 +5,13 @@ export const getSystemInstruction = (): string => {
   Your output MUST be valid JSON only. Do not output markdown code blocks.`;
 };
 
-export const generateQuizPrompt = (content: string, count: number, difficulty: Difficulty, language: 'en' | 'uz' | 'ru'): string => {
+export const generateQuizPrompt = (
+  content: string,
+  count: number,
+  difficulty: Difficulty,
+  language: 'en' | 'uz' | 'ru',
+  avoidQuestions?: string[]
+): string => {
   let difficultyGuidance = "";
 
   switch (difficulty) {
@@ -19,6 +25,13 @@ export const generateQuizPrompt = (content: string, count: number, difficulty: D
       difficultyGuidance = "Focus on application of concepts, tricky logic, edge cases, and synthesis of multiple ideas from the text.";
       break;
   }
+
+  const avoidBlock = Array.isArray(avoidQuestions) && avoidQuestions.length
+    ? `\n\nDo NOT repeat or paraphrase ANY of these previously asked questions (treat paraphrases as duplicates):\n${avoidQuestions
+        .slice(0, 30)
+        .map((q, i) => `${i + 1}) ${q}`)
+        .join('\n')}`
+    : '';
 
   return `
 Task: Generate ${count} multiple-choice questions based ONLY on the provided text content.
@@ -39,6 +52,7 @@ Rules:
 5. Keep the explanation short (max 180 characters).
 6. Do NOT use robotic phrases like "the text states", "according to the text", "the passage says", or mention "the text/passage".
 7. Write the explanation directly (no meta commentary).
+${avoidBlock}
 
 Output Format (Strict JSON):
 {
