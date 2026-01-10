@@ -1,4 +1,13 @@
-const { bot } = require('../../dist/bot.js');
+let cachedBot;
+
+const getBot = () => {
+  if (cachedBot) return cachedBot;
+  // Lazy require so we can surface errors in function logs
+  // and avoid crashing the module at import time.
+  const mod = require('../../dist/bot.js');
+  cachedBot = mod.bot;
+  return cachedBot;
+};
 
 exports.handler = async (event) => {
   try {
@@ -6,15 +15,20 @@ exports.handler = async (event) => {
       return { statusCode: 200, body: 'ok' };
     }
 
-    const update = event.body ? JSON.parse(event.body) : null;
+    const rawBody = event.isBase64Encoded
+      ? Buffer.from(event.body || '', 'base64').toString('utf8')
+      : (event.body || '');
+
+    const update = rawBody ? JSON.parse(rawBody) : null;
     if (!update) {
       return { statusCode: 200, body: 'ok' };
     }
 
+    const bot = getBot();
     await bot.handleUpdate(update);
     return { statusCode: 200, body: 'ok' };
   } catch (e) {
     console.error('telegram-webhook error', e);
-    return { statusCode: 200, body: 'ok' };
+    return { statusCode: 500, body: 'error' };
   }
 };
