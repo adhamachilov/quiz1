@@ -1,8 +1,10 @@
 import dotenv from 'dotenv';
-import path from 'path';
 
-// Load .env file
-dotenv.config();
+// Load .env file only for local development.
+// In Netlify/production, environment variables must come from the runtime.
+if (!process.env.NETLIFY && process.env.NODE_ENV !== 'production') {
+  dotenv.config();
+}
 
 interface EnvConfig {
   TELEGRAM_BOT_TOKEN: string;
@@ -11,7 +13,7 @@ interface EnvConfig {
 
 const getEnvConfig = (): EnvConfig => {
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  const apiKey = process.env.API_KEY;
+  const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
 
   if (!token) {
     throw new Error('TELEGRAM_BOT_TOKEN is missing in environment variables.');
