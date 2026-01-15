@@ -6,6 +6,8 @@ import { dbEnabled, query } from "./db.js";
 const pollStore = new Map<string, PollMetadata>();
 
 export const savePoll = (pollId: string, metadata: PollMetadata) => {
+  pollStore.set(pollId, metadata);
+
   if (dbEnabled) {
     void query(
       `insert into bot_polls (poll_id, metadata)
@@ -14,11 +16,10 @@ export const savePoll = (pollId: string, metadata: PollMetadata) => {
        set metadata = excluded.metadata,
            updated_at = now()`,
       [pollId, metadata]
-    );
-    return;
+    ).catch(() => {
+      // ignore: we always keep an in-memory copy to allow poll flow to continue
+    });
   }
-
-  pollStore.set(pollId, metadata);
 
   // Optional: Clean up old polls after 24 hours to prevent memory leaks
   setTimeout(() => {
@@ -38,9 +39,13 @@ export const getPoll = (pollId: string): PollMetadata | undefined => {
 
 export const getPollAsync = async (pollId: string): Promise<PollMetadata | undefined> => {
   if (!dbEnabled) return pollStore.get(pollId);
-  const res = await query<{ metadata: PollMetadata }>(
-    'select metadata from bot_polls where poll_id = $1',
-    [pollId]
-  );
-  return res.rows[0]?.metadata;
+  try {
+    const res = await query<{ metadata: PollMetadata }>(
+      'select metadata from bot_polls where poll_id = $1',
+      [pollId]
+    );
+    return res.rows[0]?.metadata ?? pollStore.get(pollId);
+  } catch {
+    return pollStore.get(pollId);
+  }
 };

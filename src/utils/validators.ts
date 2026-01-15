@@ -33,8 +33,18 @@ export const handleError = (ctx: Context, error: unknown, message: string) => {
     ) {
       userMessage = `⚠️ ${error.message}`;
     } else 
-    if (error.message.includes("Quota Exceeded") || error.message.includes("429") || error.message.includes("Traffic limit")) {
-      userMessage = "⚠️ Traffic Limit Reached. The AI is busy right now. Please wait 1 minute and try again.";
+    if (error.message.includes("Quota Exceeded") || error.message.includes("429") || error.message.includes("Traffic limit") || error.message.includes("RESOURCE_EXHAUSTED")) {
+      const msg = error.message || '';
+      let waitSeconds: string | undefined;
+      const m1 = msg.match(/Please retry in\s+([0-9.]+)s/i);
+      if (m1?.[1]) waitSeconds = m1[1];
+      const m2 = msg.match(/retryDelay"\s*:\s*"(\d+)s"/i);
+      if (!waitSeconds && m2?.[1]) waitSeconds = m2[1];
+      const m3 = msg.match(/retry in\s+([0-9.]+)s/i);
+      if (!waitSeconds && m3?.[1]) waitSeconds = m3[1];
+      userMessage = waitSeconds
+        ? `⚠️ Traffic Limit Reached. Please wait ${waitSeconds}s and try again.`
+        : "⚠️ Traffic Limit Reached. The AI is busy right now. Please wait and try again.";
     } else if (error.message.includes("Insufficient content")) {
        userMessage = "⚠️ The file didn't contain enough readable text to generate questions.";
     } else if (error.message.includes("AI model is currently unavailable")) {

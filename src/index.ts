@@ -7,6 +7,8 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const launchWithRetry = async () => {
   console.log('🚀 Starting Gemini Quiz Bot...');
   console.log('🔑 API Key present:', !!config.API_KEY);
+  console.log('🧠 DeepSeek key present:', !!(process.env.DEEPSEEK_API_KEY || '').trim());
+  console.log('⚡ Groq key present:', !!(process.env.GROQ_API_KEY || '').trim());
 
   // Graceful stop
   process.once('SIGINT', () => bot.stop('SIGINT'));
