@@ -8,10 +8,12 @@ import { isValidFileType, isValidFileSize, handleError } from './utils/validator
 import { UserSession, Difficulty, Language, QuestionType } from './types/quiz.js';
 import { getMaxInputChars } from './utils/chunkText.js';
 import { Buffer } from 'buffer';
+import https from 'https';
+import dns from 'dns';
 import ProxyAgent from 'proxy-agent';
 import { ProxyAgent as UndiciProxyAgent } from 'undici';
 import { dbEnabled } from './services/db.js';
-import { getSession, setSession, listUserIds, getStats, getPlanStats } from './services/sessionStore.js';
+import { getSession, setSession, listUserIds, getStats, getPlanStats, getActiveUsersBetween } from './services/sessionStore.js';
 
 const ADMIN_ID = Number((process.env.ADMIN_ID || '').trim());
 if (!Number.isFinite(ADMIN_ID) || ADMIN_ID <= 0) {
@@ -25,6 +27,13 @@ const getTextLimitVars = () => {
   const minChars = 1000;
   const minWords = 200;
   return { maxChars, maxWords, minChars, minWords };
+};
+
+const getUzbekistanTodayRange = (nowMs: number = Date.now()): { startMs: number; endMs: number } => {
+  const dayKey = getDayKeyUzbekistan(nowMs);
+  const startMs = new Date(`${dayKey}T00:00:00.000Z`).getTime() - UZ_TZ_OFFSET_MS;
+  const endMs = startMs + 24 * 60 * 60 * 1000;
+  return { startMs, endMs };
 };
 
 const DEFAULT_MAX_FILE_TEXT_CHARS = 250 * 1000;
@@ -140,7 +149,12 @@ const messages: Record<Language, Record<string, string>> = {
     adminTokensTitle: '🧾 Token usage (all users)',
     adminTokensNoData: 'No token usage data yet.',
     dailyLimitReached: '⚠️ Daily limit reached. Come back tomorrow or upgrade to Pro.',
-    questionsLeftToday: '🧠 You have {n} questions left today.',
+    questionsLeftToday: '📊 Questions left today: {n}',
+    stopped: '✅ Stopped. You can continue normally now.',
+    statusTitle: 'ℹ️ Your status',
+    statusPlanFree: 'Free',
+    statusPlanPro: 'Pro (Premium)',
+    statusExpires: 'expires: {date}',
     lowQuestionsWarning: '⚠️ Only {n} questions left today.',
     help:
       "ℹ️ How to use:\n\n" +
@@ -245,7 +259,12 @@ const messages: Record<Language, Record<string, string>> = {
     adminTokensTitle: '🧾 Token sarfi (barcha foydalanuvchilar)',
     adminTokensNoData: 'Hali token sarfi ma’lumoti yo‘q.',
     dailyLimitReached: '⚠️ Kunlik limit tugadi. Ertaga qaytib keling yoki Pro-ga o‘ting.',
-    questionsLeftToday: '🧠 Bugun sizda {n} ta savol qoldi.',
+    questionsLeftToday: '📊 Bugun qolgan savollar: {n}',
+    stopped: '✅ To‘xtatildi. Endi odatdagidek davom etishingiz mumkin.',
+    statusTitle: 'ℹ️ Sizning holatingiz',
+    statusPlanFree: 'Free',
+    statusPlanPro: 'Pro (Premium)',
+    statusExpires: 'tugash vaqti: {date}',
     lowQuestionsWarning: '⚠️ Bugun atigi {n} ta savol qoldi.',
     help:
       "ℹ️ Foydalanish:\n\n" +
@@ -350,7 +369,12 @@ const messages: Record<Language, Record<string, string>> = {
     adminTokensTitle: '🧾 Расход токенов (все пользователи)',
     adminTokensNoData: 'Данных по расходу токенов пока нет.',
     dailyLimitReached: '⚠️ Дневной лимит исчерпан. Возвращайтесь завтра или переходите на Pro.',
-    questionsLeftToday: '🧠 У вас осталось {n} вопросов на сегодня.',
+    questionsLeftToday: '📊 Вопросов осталось сегодня: {n}',
+    stopped: '✅ Остановлено. Теперь вы можете продолжать как обычно.',
+    statusTitle: 'ℹ️ Ваш статус',
+    statusPlanFree: 'Free',
+    statusPlanPro: 'Pro (Premium)',
+    statusExpires: 'истекает: {date}',
     lowQuestionsWarning: '⚠️ Осталось всего {n} вопросов на сегодня.',
     help:
       "ℹ️ Инструкция:\n\n" +
@@ -488,6 +512,15 @@ const UZ_TZ_OFFSET_MS = 5 * 60 * 60 * 1000;
 const PREMIUM_DURATION_DAYS = Math.max(1, parseInt(process.env.PREMIUM_DURATION_DAYS || '30', 10) || 30);
 const PRO_WARN_3D_MS = 3 * 24 * 60 * 60 * 1000;
 const PRO_WARN_1D_MS = 1 * 24 * 60 * 60 * 1000;
+
+const forceIpv4 = (process.env.FORCE_IPV4 ?? '1') !== '0';
+try {
+  if (forceIpv4 && typeof (dns as any).setDefaultResultOrder === 'function') {
+    (dns as any).setDefaultResultOrder('ipv4first');
+  }
+} catch {
+  // ignore
+}
 
 const isPremiumActive = (session: UserSession | undefined, nowMs: number = Date.now()): boolean => {
   if (!session) return false;
@@ -961,7 +994,7 @@ const sessionMiddleware = async (ctx: MyContext, next: () => Promise<void>) => {
 };
 
 const proxyUrl = process.env.ALL_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
-const agent = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
+const agent = proxyUrl ? new ProxyAgent(proxyUrl) : new https.Agent({ keepAlive: true } as any);
 const undiciDispatcher = proxyUrl ? new UndiciProxyAgent(proxyUrl) : undefined;
 const bot = new Telegraf<MyContext>(
   config.TELEGRAM_BOT_TOKEN,
@@ -1110,6 +1143,53 @@ bot.command('help', (ctx: MyContext) => {
     return (ctx as any).reply(t('en', 'chooseLanguage'), languageKeyboard());
   }
   return (ctx as any).reply(t(lang, 'help'));
+});
+
+bot.command('status', async (ctx: MyContext) => {
+  const userId = (ctx.from as any)?.id;
+  if (!userId) return;
+
+  const session = ctx.session as UserSession | undefined;
+  const lang: Language = (session?.language as Language) || 'en';
+
+  const proActive = isPremiumActive(session);
+  const until = Number((session as any)?.proUntil ?? 0) || 0;
+  const limit = proActive ? PRO_DAILY_QUESTIONS_LIMIT : FREE_DAILY_QUESTIONS_LIMIT;
+  const remaining = getRemainingDailyQuestions(session);
+  const used = Math.max(0, limit - remaining);
+
+  const planLine = proActive ? t(lang, 'statusPlanPro') : t(lang, 'statusPlanFree');
+  const expiresLine = proActive && until > Date.now() ? `\n${t(lang, 'statusExpires', { date: new Date(until).toISOString().slice(0, 10) })}` : '';
+
+  const msg =
+    `${t(lang, 'statusTitle')}\n\n` +
+    `id: ${userId}\n` +
+    `plan: ${planLine}${expiresLine}\n` +
+    `today: ${used}/${limit}\n` +
+    `${t(lang, 'questionsLeftToday', { n: remaining })}`;
+
+  await (ctx as any).reply(msg);
+});
+
+bot.command('stop', async (ctx: MyContext) => {
+  const session = ctx.session as UserSession | undefined;
+  const lang: Language = (session?.language as Language) || 'en';
+  if (!session) {
+    await (ctx as any).reply(t(lang, 'stopped'));
+    return;
+  }
+
+  session.adminAwaitingBroadcast = false;
+  session.adminAwaitingReset = false;
+  session.adminAwaitingUserInfo = false;
+  session.adminAwaitingProGrant = false;
+
+  session.awaitingOpenAnswer = false;
+  session.awaitingPartSelection = false;
+  session.isProcessing = false;
+  session.processingStartedAt = undefined;
+
+  await (ctx as any).reply(t(lang, 'stopped'), mainMenuKeyboard(lang));
 });
 
 bot.command('id', async (ctx: MyContext) => {
@@ -1303,12 +1383,15 @@ bot.action('admin_stats', async (ctx: any) => {
   }
   const lang: Language = (ctx.session?.language as Language) || 'en';
 
+  const { startMs, endMs } = getUzbekistanTodayRange();
+
   let usersCount = knownUsers.size;
   let sessionsCount = sessions.size;
   let withFile = 0;
   let processing = 0;
   let premiumCount = 0;
   let freeCount = 0;
+  let activeToday = 0;
   if (dbEnabled) {
     const stats = await getStats();
     usersCount = stats.users;
@@ -1319,6 +1402,8 @@ bot.action('admin_stats', async (ctx: any) => {
     const plan = await getPlanStats();
     premiumCount = plan.premium;
     freeCount = plan.free;
+
+    activeToday = await getActiveUsersBetween(startMs, endMs);
   } else {
     for (const s of sessions.values()) {
       if (s.fileText) withFile++;
@@ -1328,6 +1413,11 @@ bot.action('admin_stats', async (ctx: any) => {
       if (isPremiumActive(s)) premiumCount++;
     }
     freeCount = Math.max(0, sessions.size - premiumCount);
+
+    for (const s of sessions.values()) {
+      const last = Number(s.lastSeenAt ?? 0) || 0;
+      if (last >= startMs && last < endMs) activeToday++;
+    }
   }
 
   await safeAnswerCbQuery(ctx);
@@ -1335,6 +1425,7 @@ bot.action('admin_stats', async (ctx: any) => {
     ctx,
     `${t(lang, 'adminPanel')}\n\n` +
       `users: ${usersCount}\n` +
+      `activeToday: ${activeToday}\n` +
       `free: ${freeCount}\n` +
       `premium: ${premiumCount}\n` +
       `sessions: ${sessionsCount}\n` +
@@ -1461,7 +1552,7 @@ bot.action('admin_user', async (ctx: any) => {
     ctx.session.adminAwaitingProGrant = false;
   }
   await safeAnswerCbQuery(ctx);
-  await ctx.editMessageText(t(lang, 'adminUserPrompt'));
+  await safeEditMessageText(ctx, t(lang, 'adminUserPrompt'));
 });
 
 bot.action('admin_llm_reset', async (ctx: any) => {
@@ -1473,7 +1564,7 @@ bot.action('admin_llm_reset', async (ctx: any) => {
   resetLlmStats();
   const lang: Language = (ctx.session?.language as Language) || 'en';
   await safeAnswerCbQuery(ctx);
-  await ctx.editMessageText(t(lang, 'adminDone'));
+  await safeEditMessageText(ctx, t(lang, 'adminDone'));
 });
 
 bot.action('admin_grant_pro', async (ctx: any) => {
@@ -1489,7 +1580,7 @@ bot.action('admin_grant_pro', async (ctx: any) => {
     ctx.session.adminAwaitingProGrant = true;
   }
   await safeAnswerCbQuery(ctx);
-  await ctx.editMessageText(t(lang, 'adminGrantProPrompt'));
+  await safeEditMessageText(ctx, t(lang, 'adminGrantProPrompt'));
 });
 
 bot.action('admin_reset', async (ctx: any) => {
@@ -1505,7 +1596,7 @@ bot.action('admin_reset', async (ctx: any) => {
     ctx.session.adminAwaitingProGrant = false;
   }
   await safeAnswerCbQuery(ctx);
-  await ctx.editMessageText(t(lang, 'adminResetPrompt'));
+  await safeEditMessageText(ctx, t(lang, 'adminResetPrompt'));
 });
 
 bot.action('admin_broadcast', async (ctx: any) => {
@@ -1519,7 +1610,8 @@ bot.action('admin_broadcast', async (ctx: any) => {
     ctx.session.adminAwaitingBroadcast = true;
   }
   await safeAnswerCbQuery(ctx);
-  await ctx.editMessageText(
+  await safeEditMessageText(
+    ctx,
     t(lang, 'adminBroadcastPrompt'),
     Markup.inlineKeyboard([[Markup.button.callback(t(lang, 'adminBroadcastCancel'), 'admin_broadcast_cancel')]])
   );
@@ -1652,7 +1744,7 @@ bot.action('admin_close', async (ctx: any) => {
     return;
   }
   await safeAnswerCbQuery(ctx);
-  await ctx.editMessageText('OK');
+  await safeEditMessageText(ctx, 'OK');
 });
 
 bot.action(/lang_(en|uz|ru)/, async (ctx: any) => {
@@ -1662,7 +1754,7 @@ bot.action(/lang_(en|uz|ru)/, async (ctx: any) => {
   }
   await safeAnswerCbQuery(ctx);
 
-  await ctx.editMessageText(t(lang, 'uploadPrompt'));
+  await safeEditMessageText(ctx, t(lang, 'uploadPrompt'));
   await ctx.reply(t(lang, 'uploadPrompt'), mainMenuKeyboard(lang));
 });
 
@@ -1772,7 +1864,7 @@ bot.action('qtype_poll', async (ctx: any) => {
   session.questionType = 'poll';
   session.awaitingOpenAnswer = false;
   await safeAnswerCbQuery(ctx);
-  await ctx.editMessageText(t(lang, 'selectedQuestionTypePoll'));
+  await safeEditMessageText(ctx, t(lang, 'selectedQuestionTypePoll'));
   await ctx.reply(
     t(lang, 'howMany'),
     Markup.inlineKeyboard([
@@ -1800,7 +1892,7 @@ bot.action('qtype_open', async (ctx: any) => {
   session.questionType = 'open';
   session.awaitingOpenAnswer = false;
   await safeAnswerCbQuery(ctx);
-  await ctx.editMessageText(t(lang, 'selectedQuestionTypeOpen'));
+  await safeEditMessageText(ctx, t(lang, 'selectedQuestionTypeOpen'));
   await ctx.reply(
     t(lang, 'howMany'),
     Markup.inlineKeyboard([
@@ -1828,7 +1920,7 @@ bot.action('qtype_tfng', async (ctx: any) => {
   session.questionType = 'tfng';
   session.awaitingOpenAnswer = false;
   await safeAnswerCbQuery(ctx);
-  await ctx.editMessageText(t(lang, 'selectedQuestionTypeTfng'));
+  await safeEditMessageText(ctx, t(lang, 'selectedQuestionTypeTfng'));
   await ctx.reply(
     t(lang, 'howMany'),
     Markup.inlineKeyboard([
@@ -1872,7 +1964,7 @@ bot.action(/count_(\d+)/, async (ctx: any) => {
   ctx.session.questionCount = count;
 
   await safeAnswerCbQuery(ctx);
-  await ctx.editMessageText(t(lang, 'selectedCount', { n: count }));
+  await safeEditMessageText(ctx, t(lang, 'selectedCount', { n: count }));
   
   await ctx.reply(t(lang, 'chooseDifficulty'), Markup.inlineKeyboard([
     [Markup.button.callback(t(lang, 'easyBtn'), 'diff_easy')],
@@ -1902,7 +1994,7 @@ bot.action(/diff_(.+)/, async (ctx: any) => {
   ctx.session.processingStartedAt = Date.now();
 
   await safeAnswerCbQuery(ctx);
-  await ctx.editMessageText(t(lang, 'selectedDifficulty', { difficulty: difficultyLabel(lang, difficulty) }));
+  await safeEditMessageText(ctx, t(lang, 'selectedDifficulty', { difficulty: difficultyLabel(lang, difficulty) }));
   const processingMsg = await ctx.reply(t(lang, 'analyzing'));
 
   try {
@@ -2131,7 +2223,7 @@ bot.action('more', async (ctx: any) => {
   const lang: Language = (session?.language as Language) || 'en';
   if (!session || !session.fileText) {
     await safeAnswerCbQuery(ctx);
-    await ctx.editMessageText(t(lang, 'uploadPrompt'));
+    await safeEditMessageText(ctx, t(lang, 'uploadPrompt'));
     return;
   }
 
@@ -2149,7 +2241,7 @@ bot.action('more', async (ctx: any) => {
     const unlockBy = Math.min(Math.max(1, pageSize), remainingQuota);
     if (unlockBy <= 0) {
       await safeAnswerCbQuery(ctx);
-      await ctx.editMessageText(t(lang, 'dailyLimitReached')).catch(() => undefined);
+      await safeEditMessageText(ctx, t(lang, 'dailyLimitReached'));
       return;
     }
 
@@ -2164,7 +2256,7 @@ bot.action('more', async (ctx: any) => {
     const qType: QuestionType = (session.questionType as QuestionType) || 'poll';
     if (qType === 'open') {
       session.awaitingOpenAnswer = true;
-      await ctx.editMessageText(t(lang, 'adminDone')).catch(() => undefined);
+      await safeEditMessageText(ctx, t(lang, 'adminDone'));
       await ctx.reply(t(lang, 'questionsLeftToday', { n: getRemainingDailyQuestions(session) }));
       if (!consumeDailyQuestions(session, 1)) {
         session.awaitingOpenAnswer = false;
@@ -2177,15 +2269,15 @@ bot.action('more', async (ctx: any) => {
     }
 
     if (!chatId || !userId) {
-      await ctx.editMessageText(t(lang, 'sessionExpired'));
+      await safeEditMessageText(ctx, t(lang, 'sessionExpired'));
       return;
     }
     if (!isPollQuestion(nextQ)) {
-      await ctx.editMessageText(t(lang, 'sessionExpired'));
+      await safeEditMessageText(ctx, t(lang, 'sessionExpired'));
       return;
     }
 
-    await ctx.editMessageText(t(lang, 'adminDone')).catch(() => undefined);
+    await safeEditMessageText(ctx, t(lang, 'adminDone'));
     await ctx.reply(t(lang, 'questionsLeftToday', { n: getRemainingDailyQuestions(session) }));
     if (!consumeDailyQuestions(session, 1)) {
       await ctx.reply(t(lang, 'dailyLimitReached'));
@@ -2206,7 +2298,8 @@ bot.action('more', async (ctx: any) => {
   session.awaitingOpenAnswer = false;
 
   await safeAnswerCbQuery(ctx);
-  await ctx.editMessageText(
+  await safeEditMessageText(
+    ctx,
     t(lang, 'howMany'),
     Markup.inlineKeyboard([
       Markup.button.callback('3', 'count_3'),
@@ -2221,7 +2314,7 @@ bot.action('newfile', async (ctx: any) => {
   const lang: Language = (session?.language as Language) || 'en';
   if (!session) {
     await safeAnswerCbQuery(ctx);
-    await ctx.editMessageText(t(lang, 'uploadPrompt'));
+    await safeEditMessageText(ctx, t(lang, 'uploadPrompt'));
     return;
   }
 
@@ -2238,7 +2331,7 @@ bot.action('newfile', async (ctx: any) => {
   session.isProcessing = false;
   session.awaitingOpenAnswer = false;
   await safeAnswerCbQuery(ctx);
-  await ctx.editMessageText(t(lang, 'uploadPrompt'));
+  await safeEditMessageText(ctx, t(lang, 'uploadPrompt'));
 });
 
 bot.catch((err: any) => {

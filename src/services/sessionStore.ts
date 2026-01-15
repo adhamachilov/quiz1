@@ -14,6 +14,19 @@ export const getSession = async (userId: number): Promise<UserSession | undefine
   }
 };
 
+export const getActiveUsersBetween = async (fromMs: number, toMs: number): Promise<number> => {
+  if (!dbEnabled) return 0;
+  try {
+    const res = await query<{ count: string }>(
+      "select count(*)::text as count from bot_users where coalesce((session->>'lastSeenAt')::bigint, 0) >= $1 and coalesce((session->>'lastSeenAt')::bigint, 0) < $2",
+      [fromMs, toMs]
+    );
+    return Number(res.rows[0]?.count ?? 0) || 0;
+  } catch {
+    return 0;
+  }
+};
+
 export const getPlanStats = async (): Promise<{ free: number; premium: number }> => {
   if (!dbEnabled) return { free: 0, premium: 0 };
   try {
