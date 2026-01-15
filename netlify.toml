@@ -8,5 +8,5 @@
 
 [[redirects]]
   from = "/telegram-webhook"
-  to = "/.netlify/functions/telegram-webhook"
+  to = "/.netlify/functions/telegram-webhook-background"
   status = 200
