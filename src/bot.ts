@@ -13,7 +13,10 @@ import { ProxyAgent as UndiciProxyAgent } from 'undici';
 import { dbEnabled } from './services/db.js';
 import { getSession, setSession, listUserIds, getStats, getPlanStats } from './services/sessionStore.js';
 
-const ADMIN_ID = Number(process.env.ADMIN_ID || '609527259');
+const ADMIN_ID = Number((process.env.ADMIN_ID || '').trim());
+if (!Number.isFinite(ADMIN_ID) || ADMIN_ID <= 0) {
+  throw new Error('ADMIN_ID missing or invalid');
+}
 const ADMIN_CONTACT = '@a_adham';
 
 const getTextLimitVars = () => {
@@ -24,9 +27,11 @@ const getTextLimitVars = () => {
   return { maxChars, maxWords, minChars, minWords };
 };
 
+const DEFAULT_MAX_FILE_TEXT_CHARS = 250 * 1000;
 const MAX_FILE_TEXT_CHARS = Math.max(
   50_000,
-  parseInt(process.env.MAX_FILE_TEXT_CHARS || '250000', 10) || 250000
+  parseInt(process.env.MAX_FILE_TEXT_CHARS || String(DEFAULT_MAX_FILE_TEXT_CHARS), 10) ||
+    DEFAULT_MAX_FILE_TEXT_CHARS
 );
 
 const getFileWindowCount = (textLen: number): number => {

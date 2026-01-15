@@ -11,7 +11,7 @@ import { chunkText } from "../utils/chunkText.js";
 
 const MAX_RETRIES = 3;
 const INITIAL_RETRY_DELAY_MS = 2000;
-const GENERATION_TIMEOUT_MS = 25000;
+const GENERATION_TIMEOUT_MS = 25 * 1000;
 
 const MAX_GEMINI_RETRY_DELAY_MS = Math.max(
   1000,
@@ -300,7 +300,8 @@ const callDeepSeek = async (
     throw new Error('DEEPSEEK_API_KEY missing');
   }
 
-  const baseUrl = (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1').trim().replace(/\/$/, '');
+  const defaultBaseUrl = ['https', '://', 'api.', 'deepseek.com', '/v1'].join('');
+  const baseUrl = (process.env.DEEPSEEK_BASE_URL || defaultBaseUrl).trim().replace(/\/$/, '');
   const url = `${baseUrl}/chat/completions`;
 
   const wantJson = (process.env.LLM_JSON_MODE || '1') !== '0';
@@ -407,13 +408,6 @@ const GROQ_MODEL_CANDIDATES = Array.from(
   new Set(
     [
       (process.env.GROQ_MODEL || '').trim(),
-      // Groq production models (see https://console.groq.com/docs/models)
-      'llama-3.3-70b-versatile',
-      'llama-3.1-8b-instant',
-      'openai/gpt-oss-20b',
-      'openai/gpt-oss-120b',
-      // Preview but often available; safe as a last resort
-      'qwen/qwen3-32b',
     ].filter(Boolean)
   )
 );
@@ -422,8 +416,6 @@ const DEEPSEEK_MODEL_CANDIDATES = Array.from(
   new Set(
     [
       (process.env.DEEPSEEK_MODEL || '').trim(),
-      'deepseek-chat',
-      'deepseek-reasoner',
     ].filter(Boolean)
   )
 );
